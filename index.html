@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="screen-orientation" content="landscape">
+    <meta name="x5-orientation" content="landscape">
+    <meta name="theme-color" content="#000000">
+    <title>Five Nights At Fidesz</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        /* User kérés: a játék TELJES képernyőt kitöltse (notch / lyukkamera
+           fölé is). Ezért a html/body padding NULLA, háttér megy a szél-ig.
+           A safe-area értékek CSS változóként elérhetők maradnak azoknak az
+           UI elemeknek (pl. idő, O2), amelyek szeretnének a notch alól
+           kihúzódni — de most ezt nem kötelezővé tesszük. */
+        html, body {
+            width: 100vw;
+            height: 100vh;
+            height: 100dvh; /* dinamikus viewport (iOS Safari címsor miatt) */
+            padding: 0;
+            margin: 0;
+            box-sizing: border-box;
+            overscroll-behavior: none;
+            touch-action: manipulation;
+            background: #000;
+        }
+
+        /* Fekvő nézet kérő overlay - akkor jelenik meg, ha a mobil
+           nem tudta zárni a landscape-et és a felhasználó portréban tartja. */
+        #rotate-hint {
+            position: fixed;
+            inset: 0;
+            z-index: 99998;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.95);
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            text-align: center;
+            padding: 20px;
+            letter-spacing: 0.15em;
+        }
+        #rotate-hint.show { display: flex; }
+        #rotate-hint .rotate-icon {
+            font-size: clamp(56px, 14vw, 120px);
+            margin-bottom: 20px;
+            animation: rotateWiggle 2s ease-in-out infinite;
+        }
+        #rotate-hint .rotate-text {
+            font-size: clamp(14px, 4vw, 24px);
+            color: #ff5555;
+            line-height: 1.5;
+        }
+        @keyframes rotateWiggle {
+            0%, 100% { transform: rotate(-5deg); }
+            50% { transform: rotate(90deg); }
+        }
+
+        /* Overlay, ami közli a felhasználóval: egy érintés indítja a játékot
+           (fullscreen + hang) - elhalványul az első interakció után.
+           User kérés: csak MIUTÁN a főmenü háttérben betöltött, jelenjen meg
+           (body.menu-loaded). Így a háttérben már ott a menüzene-ready
+           állapot, csak egy tap kell az audio unlock-hoz. */
+        #tap-to-start {
+            position: fixed;
+            inset: 0;
+            z-index: 100000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.88);
+            color: #fff;
+            font-family: 'Courier New', monospace;
+            text-align: center;
+            padding: 20px;
+            letter-spacing: 0.2em;
+            cursor: pointer;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.4s ease-out;
+        }
+        body.menu-loaded #tap-to-start {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        body.menu-loaded #tap-to-start.hidden,
+        #tap-to-start.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+        #tap-to-start .tap-logo {
+            font-size: clamp(28px, 6vw, 72px);
+            color: #ff0000;
+            text-shadow: 0 0 12px #ff0000, 0 0 24px #ff0000;
+            margin-bottom: 24px;
+            line-height: 1.2;
+        }
+        #tap-to-start .tap-hint {
+            font-size: clamp(16px, 2.4vw, 28px);
+            animation: tapPulse 1.4s ease-in-out infinite;
+        }
+        @keyframes tapPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.35; }
+        }
+    </style>
+</head>
+
+<body>
+
+<div id="tap-to-start">
+    <div class="tap-logo">FIVE NIGHTS<br>AT FIDESZ</div>
+    <div class="tap-hint">KOPPINTS A KÉPERNYŐRE<br>A JÁTÉK INDÍTÁSÁHOZ</div>
+</div>
+
+<div id="rotate-hint">
+    <div class="rotate-icon">↺</div>
+    <div class="rotate-text">FORDÍTSD EL A TELEFONODAT<br>FEKVŐ NÉZETBE!</div>
+</div>
+
+<div id="preloader">
+    <div class="preloader-content">
+        <div class="preloader-logo">FIVE NIGHTS<br>AT FIDESZ</div>
+        <div class="preloader-spinner">
+            <div class="spinner-ring"></div>
+            <div class="spinner-ring"></div>
+            <div class="spinner-ring"></div>
+        </div>
+        <div class="preloader-text">LOADING<span class="loading-dots">...</span></div>
+        <div class="preloader-progress">
+            <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <div class="preloader-percentage" id="preloader-percentage">0%</div>
+    </div>
+</div>
+
+<div id="game-container">
+
+    <div id="game-screen">
+        <img id="current-scene" src="" alt="" style="display: none;">
+
+
+        <div id="hotspots"></div>
+
+
+        <div id="ui-overlay">
+
+            <div id="top-left-ui">
+                <div id="time-display"><span id="time-value">12 AM</span></div>
+                <div id="night-display">NIGHT <span id="night-value">1</span></div>
+            </div>
+
+
+            <div id="bottom-right-ui">
+                <div id="oxygen-display">
+                    <img src="assets/images/fa3.png" alt="Vent" class="vent-icon">
+                    <span id="power-value">100</span><span class="percent-sign">%</span><span
+                        class="oxygen-unit">O<sub>2</sub></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+    <div id="camera-panel" class="hidden">
+        <div id="current-cam-label">CAM 11</div>
+        <div id="camera-error-label">ERR</div>
+
+        <video id="camera-static-video" src="assets/images/static.mp4" loop muted playsinline></video>
+
+        <div id="character-overlay"></div>
+        <div id="camera-grid"></div>
+        <button id="shock-hawking-btn">ÁRAD A TISZA</button>
+        <button id="play-sound-btn">PLAY SOUND</button>
+    </div>
+
+
+    <div id="cutscene" class="hidden">
+        <img src="assets/images/cutscene.png" alt="Cutscene">
+        <div class="cutscene-hint">Click to continue...</div>
+    </div>
+
+
+    <div id="night-intro" class="hidden">
+        <div id="night-intro-text">NIGHT 1</div>
+    </div>
+
+
+    <div id="main-menu">
+        <img id="star-icon" class="hidden" src="assets/images/star.png" alt="Star">
+        <img id="star-icon-2" class="hidden" src="assets/images/star.png" alt="Star 2">
+        <img id="star-icon-3" class="hidden" src="assets/images/star.png" alt="Star 3">
+
+        <h1>FIVE<br>NIGHTS<br>AT<br>FIDESZ</h1>
+        <button id="start-game">NEW GAME</button>
+        <button id="continue-game" class="hidden">CONTINUE</button>
+        <button id="special-night-btn" class="hidden">ORBAN'S SPECIAL NIGHT</button>
+        <button id="custom-night-btn" class="hidden">CUSTOM NIGHT</button>
+        <div class="copyright">© Fidesz - KDNP</div>
+        <div class="version">v26.04.12</div>
+    </div>
+
+
+    <button id="volume-btn" title="Volume Settings">Hang beállítások</button>
+
+
+    <div id="volume-panel" class="hidden">
+        <h3>HANG BEÁLLÍTÁSOK</h3>
+
+        <div class="volume-item">
+            <label>Fő hangerő</label>
+            <div class="volume-slider-container">
+                <input type="range" id="master-volume" min="0" max="100" value="70" />
+                <span class="volume-percent">70%</span>
+            </div>
+        </div>
+
+        <div class="volume-item">
+            <label>Háttér hang</label>
+            <div class="volume-slider-container">
+                <input type="range" id="game-bg-volume" min="0" max="100" value="70" />
+                <span class="volume-percent">70%</span>
+            </div>
+        </div>
+
+        <div class="volume-item">
+            <label>Főmenü</label>
+            <div class="volume-slider-container">
+                <input type="range" id="menu-music-volume" min="0" max="100" value="70" />
+                <span class="volume-percent">70%</span>
+            </div>
+        </div>
+
+        <div class="volume-item">
+            <label>Jumpscarek hangja</label>
+            <div class="volume-slider-container">
+                <input type="range" id="jumpscare-volume" min="0" max="100" value="70" />
+                <span class="volume-percent">70%</span>
+            </div>
+        </div>
+
+        <div class="volume-item">
+            <label>Szellőző hangja</label>
+            <div class="volume-slider-container">
+                <input type="range" id="vent-crawling-volume" min="0" max="100" value="70" />
+                <span class="volume-percent">70%</span>
+            </div>
+        </div>
+
+        <button id="close-volume-panel">CLOSE</button>
+    </div>
+
+
+    <div id="custom-night-menu" class="hidden">
+        <h1>CUSTOM NIGHT</h1>
+        <div class="custom-night-controls">
+
+            <div class="ai-control">
+                <div class="ai-name">ORBÁN VIKTOR</div>
+                <div class="ai-slider-container">
+                    <button class="ai-btn-minus" data-ai="epstein">-</button>
+                    <input type="range" id="epstein-slider" class="ai-slider" min="0" max="20" value="0">
+                    <button class="ai-btn-plus" data-ai="epstein">+</button>
+                </div>
+                <div class="ai-value" id="epstein-value">0</div>
+            </div>
+
+
+            <div class="ai-control">
+                <div class="ai-name">LÁZÁR JÁNOS</div>
+                <div class="ai-slider-container">
+                    <button class="ai-btn-minus" data-ai="trump">-</button>
+                    <input type="range" id="trump-slider" class="ai-slider" min="0" max="20" value="0">
+                    <button class="ai-btn-plus" data-ai="trump">+</button>
+                </div>
+                <div class="ai-value" id="trump-value">0</div>
+            </div>
+
+
+            <div class="ai-control">
+                <div class="ai-name">DEUTSCH TAMÁS</div>
+                <div class="ai-slider-container">
+                    <button class="ai-btn-minus" data-ai="hawking">-</button>
+                    <input type="range" id="hawking-slider" class="ai-slider" min="0" max="20" value="0">
+                    <button class="ai-btn-plus" data-ai="hawking">+</button>
+                </div>
+                <div class="ai-value" id="hawking-value">0</div>
+            </div>
+        </div>
+
+        <div class="custom-night-buttons">
+            <button id="start-custom-night">START</button>
+            <button id="back-to-menu">BACK</button>
+        </div>
+    </div>
+
+
+    <canvas id="static-canvas"></canvas>
+
+
+    <audio id="menu-music" loop>
+        <source src="assets/sounds/music3.ogg" type="audio/ogg">
+    </audio>
+
+
+    <div id="game-over" class="hidden">
+
+        <div id="game-over-content">
+            <h2 id="game-over-text"></h2>
+            <p id="game-over-subtitle" class="hidden"></p>
+            <button id="restart">Restart</button>
+            <button id="main-menu-btn">Main Menu</button>
+        </div>
+    </div>
+
+
+    <div id="tutorial-overlay" class="hidden">
+        <div id="tutorial-content">
+            <h2>VÉDD MEG MAGAD A PROPAGANDÁTÓL!</h2>
+            <p>
+                ORBÁN VIKTOR MINDIG A 11-ES KAMERÁNÁL KEZD.
+                HASZNÁLD A CAMERA PANELBEN A PLAY SOUND GOMBOT, HOGY TÁVOL TARTSD MAGADTÓL.
+                GYŐZŐDJ MEG RÓLA, HOGY ABBAN A KAMERÁBAN JÁTSZOD LE A HANGOT, AMELY ORBÁN MELLETT VAN,
+                HA ABBAN JÁTSZOD LE, AHOL ELHELYEZKEDIK AKKOR KÖZELÍTENI FOG FELÉD!
+                HA UGYANAZON A HELYEN KÉTSZER VAGY TÖBBSZÖR EGYMÁS UTÁN JÁTSZOD LE A HANGOT, AZ NEM FOG MŰKÖDNI.
+                A HANGOK TÚL GYAKORI LEJÁTSZÁSA A KAMERÁK MEGHIBÁSODÁSÁHOZ VEZET.
+                A JAVÍTÁSHOZ MENJ A VEZÉRLŐPULTHOZ, ÉS INDÍTSD ÚJRA A KAMERÁKAT, AHOGYAN KORÁBBAN IS TETTED.
+                ORBÁN NEM TÁMAD A SZELLŐZŐKÖN KERESZTÜL, EZÉRT EZEN AZ ÉJSZAKÁN NEM SZÜKSÉG
+            </p>
+            <button id="tutorial-got-it">OKÉ </button>
+        </div>
+    </div>
+</div>
+
+<script>
+    // === Eszköz-optimalizáció: fullscreen + landscape + minden hang mute háttérben ===
+    (function () {
+        'use strict';
+
+        // ---- 1) Minden `new Audio()` példány regisztrációja ----
+        // A játék az AssetManager-ben DOM-on kívüli Audio objektumokat használ,
+        // így monkey-patcheljük a konstruktort, hogy később elérhessük őket.
+        const trackedMedia = new Set();
+        try {
+            const OriginalAudio = window.Audio;
+            if (OriginalAudio) {
+                const PatchedAudio = function (...args) {
+                    const instance = args.length
+                        ? new OriginalAudio(...args)
+                        : new OriginalAudio();
+                    try { trackedMedia.add(instance); } catch (e) {}
+                    return instance;
+                };
+                PatchedAudio.prototype = OriginalAudio.prototype;
+                window.Audio = PatchedAudio;
+            }
+        } catch (e) { /* ignore */ }
+
+        function collectMedia() {
+            const fromDom = document.querySelectorAll('audio, video');
+            const all = new Set(trackedMedia);
+            fromDom.forEach((el) => all.add(el));
+            return all;
+        }
+
+        // ---- 2) Fullscreen + landscape zár első gesztusra ----
+        const tapOverlay = document.getElementById('tap-to-start');
+        const rotateHint = document.getElementById('rotate-hint');
+
+        function requestFullscreen(el) {
+            const target = el || document.documentElement;
+            const fn = target.requestFullscreen
+                || target.webkitRequestFullscreen
+                || target.webkitRequestFullScreen
+                || target.mozRequestFullScreen
+                || target.msRequestFullscreen;
+            if (!fn) return Promise.reject(new Error('no-fullscreen-api'));
+            try {
+                const result = fn.call(target);
+                return result && typeof result.then === 'function'
+                    ? result
+                    : Promise.resolve();
+            } catch (err) {
+                return Promise.reject(err);
+            }
+        }
+
+        function lockLandscape() {
+            try {
+                if (screen.orientation && typeof screen.orientation.lock === 'function') {
+                    const p = screen.orientation.lock('landscape');
+                    if (p && typeof p.then === 'function') return p;
+                } else if (screen.lockOrientation) {
+                    screen.lockOrientation('landscape');
+                } else if (screen.mozLockOrientation) {
+                    screen.mozLockOrientation('landscape');
+                } else if (screen.msLockOrientation) {
+                    screen.msLockOrientation('landscape');
+                }
+            } catch (e) { /* ignore */ }
+            return Promise.reject(new Error('no-orientation-api'));
+        }
+
+        function isMobileLike() {
+            return (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+                || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+        }
+
+        function updateRotateHint() {
+            if (!rotateHint) return;
+            const portrait = window.matchMedia('(orientation: portrait)').matches;
+            const narrow = Math.min(window.innerWidth, window.innerHeight) <= 926;
+            if (portrait && narrow && isMobileLike() && interactionHandled) {
+                rotateHint.classList.add('show');
+            } else {
+                rotateHint.classList.remove('show');
+            }
+        }
+
+        let interactionHandled = false;
+        function handleFirstInteraction() {
+            if (interactionHandled) return;
+            interactionHandled = true;
+
+            requestFullscreen(document.documentElement)
+                .then(() => lockLandscape().catch(() => {}))
+                .catch(() => {
+                    // Fullscreen nem sikerült (pl. iPhone Safari) - még így is
+                    // megpróbáljuk a landscape zárat és a hint-et.
+                    lockLandscape().catch(() => {});
+                })
+                .finally(() => updateRotateHint());
+
+            if (tapOverlay) {
+                tapOverlay.classList.add('hidden');
+                setTimeout(() => {
+                    if (tapOverlay.parentNode) tapOverlay.parentNode.removeChild(tapOverlay);
+                }, 500);
+            }
+        }
+
+        ['click', 'touchstart', 'keydown'].forEach((evt) => {
+            window.addEventListener(evt, handleFirstInteraction, { capture: true });
+        });
+
+        document.addEventListener('fullscreenchange', () => {
+            if (!document.fullscreenElement) interactionHandled = false;
+        });
+        document.addEventListener('webkitfullscreenchange', () => {
+            if (!document.webkitFullscreenElement) interactionHandled = false;
+        });
+
+        window.addEventListener('orientationchange', () => {
+            if (document.fullscreenElement || document.webkitFullscreenElement) {
+                lockLandscape().catch(() => {});
+            }
+            setTimeout(updateRotateHint, 100);
+        });
+        window.addEventListener('resize', updateRotateHint);
+        window.addEventListener('DOMContentLoaded', updateRotateHint);
+
+        // ---- 3) Minden hang némítása, ha a lap háttérbe kerül ----
+        const pausedByVisibility = new WeakSet();
+
+        function pauseAllMedia() {
+            collectMedia().forEach((el) => {
+                try {
+                    if (!el.paused) {
+                        pausedByVisibility.add(el);
+                        el.pause();
+                    }
+                } catch (e) { /* ignore */ }
+            });
+        }
+
+        function resumeAllMedia() {
+            collectMedia().forEach((el) => {
+                if (pausedByVisibility.has(el)) {
+                    pausedByVisibility.delete(el);
+                    try {
+                        const p = el.play();
+                        if (p && typeof p.catch === 'function') p.catch(() => {});
+                    } catch (e) { /* ignore */ }
+                }
+            });
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) pauseAllMedia();
+            else resumeAllMedia();
+        });
+        window.addEventListener('blur', pauseAllMedia);
+        window.addEventListener('pagehide', pauseAllMedia);
+        window.addEventListener('focus', () => {
+            if (!document.hidden) resumeAllMedia();
+        });
+
+        // Külsőleg is elérhetővé tesszük debughoz.
+        window.__fnafDeviceEnhancements = {
+            trackedMedia, collectMedia, pauseAllMedia, resumeAllMedia, updateRotateHint
+        };
+    })();
+</script>
+
+<script src="js/ViewportManager.js"></script>
+<script src="js/GameState.js"></script>
+<script src="js/AssetManager.js"></script>
+<script src="js/UIManager.js"></script>
+<script src="js/CameraSystem.js"></script>
+<script src="js/EnemyAI.js"></script>
+<script src="js/InputHandler.js"></script>
+<script src="js/StaticNoise.js"></script>
+<script src="js/ScaryFaceFlicker.js"></script>
+<script src="js/Game.js"></script>
+<script src="js/main.js"></script>
+
+</body>
+
+</html>
